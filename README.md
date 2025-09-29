@@ -1,5 +1,7 @@
 # Cost-SLO-Aware-LLM-Inference-Router
 
+[![CI](https://github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/actions/workflows/go-ci.yml/badge.svg)](https://github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/actions/workflows/go-ci.yml)
+
 Run the server:
 
 ```bash
@@ -40,3 +42,29 @@ Expected local mock benchmark (localhost):
 - AWS_PROFILE or AWS_ACCESS_KEY_ID/SECRET (enables Bedrock)
 - BEDROCK_REGION (default us-east-1), BEDROCK_MODEL_ID
 - OTEL_EXPORTER_OTLP_ENDPOINT (optional)
+
+Docker
+
+Build and run locally:
+
+```bash
+docker build -t ghcr.io/ratnathegod/llm-router:local .
+docker run --rm -p 8080:8080 ghcr.io/ratnathegod/llm-router:local
+```
+
+Smoke test locally:
+
+```bash
+ENABLE_MOCK_PROVIDER=1 go run ./cmd/server & sleep 2
+go run ./cmd/loadgen --qps 200 --concurrency 64 --duration 15s --policy cheapest --prompt "ping"
+pkill -f "go run ./cmd/server"
+```
+
+Release
+
+Tag and push to cut a release:
+
+```bash
+git tag v0.1.0
+git push --tags
+```

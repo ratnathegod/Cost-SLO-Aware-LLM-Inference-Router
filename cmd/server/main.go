@@ -14,8 +14,8 @@ import (
 
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/api"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/config"
-	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/telemetry"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/router"
+	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/telemetry"
 )
 
 func main() {

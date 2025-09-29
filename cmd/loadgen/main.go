@@ -17,11 +17,11 @@ import (
 )
 
 type inferReq struct {
-	Model   string `json:"model"`
-	Prompt  string `json:"prompt"`
-	MaxTok  int    `json:"max_tokens,omitempty"`
-	Stream  bool   `json:"stream,omitempty"`
-	Policy  string `json:"policy,omitempty"`
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	MaxTok int    `json:"max_tokens,omitempty"`
+	Stream bool   `json:"stream,omitempty"`
+	Policy string `json:"policy,omitempty"`
 }
 
 type inferResp struct {
@@ -42,17 +42,17 @@ type result struct {
 }
 
 type summary struct {
-	TargetQPS     float64 `json:"target_qps"`
-	AchievedQPS   float64 `json:"achieved_qps"`
-	Requests      int     `json:"requests"`
-	Failures      int     `json:"failures"`
-	SuccessRate   float64 `json:"success_rate"`
-	ErrorRate     float64 `json:"error_rate"`
-	P50           float64 `json:"p50_ms"`
-	P90           float64 `json:"p90_ms"`
-	P95           float64 `json:"p95_ms"`
-	P99           float64 `json:"p99_ms"`
-	TotalCostUSD  float64 `json:"total_cost_usd"`
+	TargetQPS    float64 `json:"target_qps"`
+	AchievedQPS  float64 `json:"achieved_qps"`
+	Requests     int     `json:"requests"`
+	Failures     int     `json:"failures"`
+	SuccessRate  float64 `json:"success_rate"`
+	ErrorRate    float64 `json:"error_rate"`
+	P50          float64 `json:"p50_ms"`
+	P90          float64 `json:"p90_ms"`
+	P95          float64 `json:"p95_ms"`
+	P99          float64 `json:"p99_ms"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
 }
 
 func percentile(vals []int64, p float64) float64 {
@@ -105,11 +105,16 @@ func main() {
 	var ptxt string
 	if *promptFile != "" {
 		b, err := os.ReadFile(*promptFile)
-		if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(2) }
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
 		ptxt = string(b)
 	} else {
 		ptxt = *prompt
-		if ptxt == "" { ptxt = "ping" }
+		if ptxt == "" {
+			ptxt = "ping"
+		}
 	}
 
 	client := &http.Client{Timeout: *timeout}
@@ -120,13 +125,17 @@ func main() {
 	readyDeadline := time.Now().Add(*warmup)
 	for time.Now().Before(readyDeadline) {
 		resp, err := client.Get(readyURL)
-		if err == nil && resp.StatusCode == 200 { break }
+		if err == nil && resp.StatusCode == 200 {
+			break
+		}
 		time.Sleep(200 * time.Millisecond)
 	}
 
 	// Token bucket (simple)
 	interval := time.Duration(float64(time.Second) / *qps)
-	if interval <= 0 { interval = time.Millisecond }
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
 	var tokens int64
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -148,7 +157,10 @@ func main() {
 				atomic.AddInt64(&tokens, 1)
 			default:
 			}
-			if atomic.LoadInt64(&tokens) <= 0 { time.Sleep(100 * time.Microsecond); continue }
+			if atomic.LoadInt64(&tokens) <= 0 {
+				time.Sleep(100 * time.Microsecond)
+				continue
+			}
 			atomic.AddInt64(&tokens, -1)
 			atomic.AddInt64(&sent, 1)
 			// fire request
@@ -181,7 +193,9 @@ func main() {
 	}
 
 	wg.Add(*conc)
-	for i := 0; i < *conc; i++ { go worker(i) }
+	for i := 0; i < *conc; i++ {
+		go worker(i)
+	}
 
 	go func() {
 		wg.Wait()
@@ -198,11 +212,14 @@ func main() {
 	var csvWriter *csv.Writer
 	if *csvOut != "" {
 		f, err := os.Create(*csvOut)
-		if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		defer f.Close()
 		csvWriter = csv.NewWriter(f)
 		defer csvWriter.Flush()
-		csvWriter.Write([]string{"ts","latency_ms","success","provider","cost_usd","policy","code"})
+		csvWriter.Write([]string{"ts", "latency_ms", "success", "provider", "cost_usd", "policy", "code"})
 	}
 
 	progress := time.NewTicker(time.Second)
@@ -214,9 +231,13 @@ func main() {
 			if !ok {
 				goto done
 			}
-			if time.Since(t0) < *warmup { continue }
+			if time.Since(t0) < *warmup {
+				continue
+			}
 			reqs++
-			if !r.Success { fails++ }
+			if !r.Success {
+				fails++
+			}
 			latencies = append(latencies, r.LatencyMs)
 			totalCost += r.CostUSD
 			if csvWriter != nil {
@@ -250,7 +271,9 @@ done:
 	}
 	if *jsonSummary != "" {
 		b, _ := json.MarshalIndent(s, "", "  ")
-		if err := os.WriteFile(*jsonSummary, b, 0644); err != nil { fmt.Fprintln(os.Stderr, err) }
+		if err := os.WriteFile(*jsonSummary, b, 0644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 	} else {
 		b, _ := json.MarshalIndent(s, "", "  ")
 		fmt.Println(string(b))

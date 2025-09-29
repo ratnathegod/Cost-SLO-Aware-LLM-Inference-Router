@@ -1,0 +1,94 @@
+name: go-ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.60.0
+          args: --timeout=5m
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - run: go mod download
+      - run: go test ./... -race -coverprofile=coverage.out -covermode=atomic
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - run: go build ./cmd/server
+      - run: go build ./cmd/loadgen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            cmd/server/server
+            cmd/loadgen/loadgen
+
+  smoke-mock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - name: Start server (mock)
+        run: |
+          set -euo pipefail
+          ENABLE_MOCK_PROVIDER=1 nohup go run ./cmd/server > server.log 2>&1 &
+          echo $! > server.pid
+      - name: Wait for ready
+        run: |
+          for i in {1..40}; do
+            if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/v1/readyz | grep -q 200; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "server not ready"; cat server.log; exit 1
+      - name: Run loadgen (short)
+        run: |
+          set -euo pipefail
+          go run ./cmd/loadgen --qps 200 --concurrency 64 --duration 15s --policy cheapest --prompt "ping" --json-summary /tmp/summary.json
+      - name: Upload summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary
+          path: /tmp/summary.json
+      - name: Cleanup server
+        if: always()
+        run: |
+          kill $(cat server.pid) || true
+          sleep 1
+          pkill -f "go run ./cmd/server" || true
