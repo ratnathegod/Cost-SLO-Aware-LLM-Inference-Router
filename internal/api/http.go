@@ -3,9 +3,12 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 
 	"github.com/rs/zerolog/log"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/config"
+	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/providers"
+	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/router"
 )
 
 type InferRequest struct {
@@ -24,6 +27,36 @@ type InferResponse struct {
 }
 
 func HandleInfer(cfg config.Config) http.HandlerFunc {
+	// Build providers with resilience once per handler creation
+	provs := make([]*providers.ResilientProvider, 0, 2)
+	if cfg.OpenAIKey != "" {
+		op := providers.NewOpenAIProvider(cfg.OpenAIKey)
+		provs = append(provs, providers.WithResilience(op, providers.ResilienceOptions{
+			Timeout:     30 * 1_000_000_000, // 30s
+			MaxRetries:  2,
+			BaseBackoff: 200 * 1_000_000,   // 200ms
+			MaxBackoff:  2 * 1_000_000_000, // 2s
+			JitterFrac:  0.2,
+			CBWindowSize: 20,
+			CBCooldown:  30 * 1_000_000_000, // 30s
+		}))
+	}
+	if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_PROFILE") != "" {
+		if br, err := providers.NewBedrockProvider(cfg.BedrockModelID, cfg.BedrockRegion); err == nil {
+		provs = append(provs, providers.WithResilience(br, providers.ResilienceOptions{
+			Timeout:     30 * 1_000_000_000,
+			MaxRetries:  2,
+			BaseBackoff: 200 * 1_000_000,
+			MaxBackoff:  2 * 1_000_000_000,
+			JitterFrac:  0.2,
+			CBWindowSize: 20,
+			CBCooldown:  30 * 1_000_000_000,
+		}))
+		} else {
+			log.Warn().Err(err).Msg("bedrock init failed")
+		}
+	}
+	eng := router.NewEngine(provs)
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req InferRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -33,14 +66,27 @@ func HandleInfer(cfg config.Config) http.HandlerFunc {
 		if req.Policy == "" {
 			req.Policy = cfg.DefaultPolicy
 		}
-
-		// Stub response for now; Copilot will replace with real routing/providers.
-		resp := InferResponse{
-			Provider: "mock",
-			Text:     "(stub) hello from llm-router",
-			CostUSD:  0.0001,
-			LatencyMs: 12,
+		if req.Model == "" {
+			req.Model = cfg.OpenAIModel
 		}
+
+		// Choose provider via policy engine
+		chosen := eng.Choose(req.Policy, req.Model)
+		if chosen == nil {
+			http.Error(w, "no providers available", http.StatusServiceUnavailable)
+			return
+		}
+		// Call provider
+		pReq := providers.CompletionRequest{Model: req.Model, Prompt: req.Prompt, MaxTok: req.MaxTok, Stream: req.Stream}
+		out, cost, latency, err := chosen.Complete(r.Context(), pReq)
+		failed := err != nil
+		eng.RecordResult(chosen.Name(), failed)
+		if err != nil {
+			log.Error().Err(err).Str("provider", chosen.Name()).Msg("completion failed")
+			http.Error(w, "provider error", http.StatusBadGateway)
+			return
+		}
+		resp := InferResponse{Provider: chosen.Name(), Text: out.Text, CostUSD: cost, LatencyMs: latency}
 
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
