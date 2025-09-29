@@ -14,6 +14,7 @@ import (
 
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/api"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/config"
+	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/telemetry"
 )
 
 func main() {
@@ -25,10 +26,22 @@ func main() {
 	cfg := config.Load()
 
 	r := chi.NewRouter()
+	// Observability init
+	telemetry.MustRegisterMetrics()
+	if shutdown, err := telemetry.InitOTEL(context.Background(), "llm-router", cfg.OtelEndpoint); err != nil {
+		log.Warn().Err(err).Msg("OTEL init failed")
+	} else {
+		defer func() {
+			_ = shutdown(context.Background())
+		}()
+	}
+
+	r.Use(telemetry.RequestIDMiddleware)
 	r.Get("/v1/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	r.Handle("/metrics", telemetry.MetricsHandler())
 	r.Post("/v1/infer", api.HandleInfer(cfg))
 
 	srv := &http.Server{

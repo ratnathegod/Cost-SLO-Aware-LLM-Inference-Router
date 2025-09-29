@@ -5,25 +5,28 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/rs/zerolog/log"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/config"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/providers"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/router"
+	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/telemetry"
+	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type InferRequest struct {
-	Model   string `json:"model"`
-	Prompt  string `json:"prompt"`
-	MaxTok  int    `json:"max_tokens,omitempty"`
-	Stream  bool   `json:"stream,omitempty"`
-	Policy  string `json:"policy,omitempty"` // e.g., cheapest|fastest_p95|slo_burn_aware|canary
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	MaxTok int    `json:"max_tokens,omitempty"`
+	Stream bool   `json:"stream,omitempty"`
+	Policy string `json:"policy,omitempty"` // e.g., cheapest|fastest_p95|slo_burn_aware|canary
 }
 
 type InferResponse struct {
-	Provider string  `json:"provider"`
-	Text     string  `json:"text"`
-	CostUSD  float64 `json:"cost_usd"`
-	LatencyMs int64  `json:"latency_ms"`
+	Provider  string  `json:"provider"`
+	Text      string  `json:"text"`
+	CostUSD   float64 `json:"cost_usd"`
+	LatencyMs int64   `json:"latency_ms"`
 }
 
 func HandleInfer(cfg config.Config) http.HandlerFunc {
@@ -32,26 +35,26 @@ func HandleInfer(cfg config.Config) http.HandlerFunc {
 	if cfg.OpenAIKey != "" {
 		op := providers.NewOpenAIProvider(cfg.OpenAIKey)
 		provs = append(provs, providers.WithResilience(op, providers.ResilienceOptions{
-			Timeout:     30 * 1_000_000_000, // 30s
-			MaxRetries:  2,
-			BaseBackoff: 200 * 1_000_000,   // 200ms
-			MaxBackoff:  2 * 1_000_000_000, // 2s
-			JitterFrac:  0.2,
+			Timeout:      30 * 1_000_000_000, // 30s
+			MaxRetries:   2,
+			BaseBackoff:  200 * 1_000_000,   // 200ms
+			MaxBackoff:   2 * 1_000_000_000, // 2s
+			JitterFrac:   0.2,
 			CBWindowSize: 20,
-			CBCooldown:  30 * 1_000_000_000, // 30s
+			CBCooldown:   30 * 1_000_000_000, // 30s
 		}))
 	}
 	if os.Getenv("AWS_ACCESS_KEY_ID") != "" || os.Getenv("AWS_PROFILE") != "" {
 		if br, err := providers.NewBedrockProvider(cfg.BedrockModelID, cfg.BedrockRegion); err == nil {
-		provs = append(provs, providers.WithResilience(br, providers.ResilienceOptions{
-			Timeout:     30 * 1_000_000_000,
-			MaxRetries:  2,
-			BaseBackoff: 200 * 1_000_000,
-			MaxBackoff:  2 * 1_000_000_000,
-			JitterFrac:  0.2,
-			CBWindowSize: 20,
-			CBCooldown:  30 * 1_000_000_000,
-		}))
+			provs = append(provs, providers.WithResilience(br, providers.ResilienceOptions{
+				Timeout:      30 * 1_000_000_000,
+				MaxRetries:   2,
+				BaseBackoff:  200 * 1_000_000,
+				MaxBackoff:   2 * 1_000_000_000,
+				JitterFrac:   0.2,
+				CBWindowSize: 20,
+				CBCooldown:   30 * 1_000_000_000,
+			}))
 		} else {
 			log.Warn().Err(err).Msg("bedrock init failed")
 		}
@@ -76,11 +79,60 @@ func HandleInfer(cfg config.Config) http.HandlerFunc {
 			http.Error(w, "no providers available", http.StatusServiceUnavailable)
 			return
 		}
+		// Start span
+		tracer := otel.Tracer("llm-router")
+		ctx, span := tracer.Start(r.Context(), "infer")
+		span.SetAttributes(
+			attribute.String("policy", req.Policy),
+			attribute.String("model", req.Model),
+			attribute.String("provider", chosen.Name()),
+		)
+		defer span.End()
 		// Call provider
 		pReq := providers.CompletionRequest{Model: req.Model, Prompt: req.Prompt, MaxTok: req.MaxTok, Stream: req.Stream}
-		out, cost, latency, err := chosen.Complete(r.Context(), pReq)
+		out, cost, latency, err := chosen.Complete(ctx, pReq)
 		failed := err != nil
 		eng.RecordResult(chosen.Name(), failed)
+		// Metrics
+		code := "200"
+		reason := ""
+		if err != nil {
+			code = "502"
+			reason = "provider_error"
+		}
+		telemetry.RequestsTotal.WithLabelValues(chosen.Name(), req.Policy, code).Inc()
+		telemetry.LatencyMs.WithLabelValues(chosen.Name(), req.Policy).Observe(float64(latency))
+		if !failed {
+			telemetry.CostUSDTotal.WithLabelValues(chosen.Name()).Add(cost)
+		} else {
+			telemetry.ErrorsTotal.WithLabelValues(chosen.Name(), reason).Inc()
+		}
+		// Span attrs
+		span.SetAttributes(
+			attribute.Float64("cost_usd", cost),
+			attribute.Int64("latency_ms", latency),
+			attribute.Bool("success", !failed),
+		)
+		// Export CB state gauge
+		if rp, ok := any(chosen).(*providers.ResilientProvider); ok {
+			telemetry.CBState.WithLabelValues(chosen.Name()).Set(rp.CBStateValue())
+		}
+		// Burn rate windows
+		if rp, ok := any(chosen).(*providers.ResilientProvider); ok {
+			er1m := rp.Stats().ErrorRateSince(1 * 60 * 1e9)
+			er5m := rp.Stats().ErrorRateSince(5 * 60 * 1e9)
+			er1h := rp.Stats().ErrorRateSince(60 * 60 * 1e9)
+			// Assume SLO target 1%
+			burn1m := er1m / 0.01
+			burn5m := er5m / 0.01
+			burn1h := er1h / 0.01
+			telemetry.BurnRate.WithLabelValues("1m").Set(burn1m)
+			telemetry.BurnRate.WithLabelValues("5m").Set(burn5m)
+			telemetry.BurnRate.WithLabelValues("1h").Set(burn1h)
+			if burn1m > 1.0 || burn5m > 1.0 || burn1h > 1.0 {
+				log.Warn().Str("provider", chosen.Name()).Float64("burn_1m", burn1m).Float64("burn_5m", burn5m).Float64("burn_1h", burn1h).Msg("error budget burning")
+			}
+		}
 		if err != nil {
 			log.Error().Err(err).Str("provider", chosen.Name()).Msg("completion failed")
 			http.Error(w, "provider error", http.StatusBadGateway)

@@ -5,13 +5,13 @@ import (
 )
 
 type Config struct {
-	Port          string
-	DefaultPolicy string
-	OpenAIKey     string
-	OpenAIModel   string
-	BedrockRegion string
+	Port           string
+	DefaultPolicy  string
+	OpenAIKey      string
+	OpenAIModel    string
+	BedrockRegion  string
 	BedrockModelID string
-	OtelEndpoint  string
+	OtelEndpoint   string
 }
 
 func getenv(k, def string) string {
@@ -23,12 +23,12 @@ func getenv(k, def string) string {
 
 func Load() Config {
 	return Config{
-		Port:          getenv("PORT", "8080"),
-		DefaultPolicy: getenv("ROUTER_POLICY", "cheapest"),
-		OpenAIKey:     getenv("OPENAI_API_KEY", ""),
-		OpenAIModel:   getenv("OPENAI_MODEL", "gpt-4o"),
-		BedrockRegion: getenv("BEDROCK_REGION", "us-east-1"),
+		Port:           getenv("PORT", "8080"),
+		DefaultPolicy:  getenv("ROUTER_POLICY", "cheapest"),
+		OpenAIKey:      getenv("OPENAI_API_KEY", ""),
+		OpenAIModel:    getenv("OPENAI_MODEL", "gpt-4o"),
+		BedrockRegion:  getenv("BEDROCK_REGION", "us-east-1"),
 		BedrockModelID: getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku"),
-		OtelEndpoint:  getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		OtelEndpoint:   getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 	}
 }
