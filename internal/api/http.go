@@ -59,6 +59,21 @@ func HandleInfer(cfg config.Config) http.HandlerFunc {
 			log.Warn().Err(err).Msg("bedrock init failed")
 		}
 	}
+	// Optional Mock provider for local/dev testing
+	if cfg.EnableMockProvider {
+		mp := providers.NewMockProvider(float64(cfg.MockMeanLatencyMs), float64(cfg.MockP95LatencyMs), cfg.MockErrorRate, cfg.MockCostPer1kUSD)
+		provs = append(provs, providers.WithResilience(mp, providers.ResilienceOptions{
+			Timeout:      30 * 1_000_000_000,
+			MaxRetries:   1,
+			BaseBackoff:  100 * 1_000_000,
+			MaxBackoff:   1 * 1_000_000_000,
+			JitterFrac:   0.2,
+			CBWindowSize: 20,
+			CBCooldown:   10 * 1_000_000_000,
+		}))
+	}
+	// publish providers to registry for readiness checks
+	router.SetProviders(provs)
 	eng := router.NewEngine(provs)
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req InferRequest

@@ -17,6 +17,23 @@ Observability:
 - X-Request-ID middleware sets and propagates request IDs.
 
 Key env vars:
+Mock provider (dev only):
+- ENABLE_MOCK_PROVIDER=1 to enable
+- MOCK_MEAN_LATENCY_MS (default 40)
+- MOCK_P95_LATENCY_MS (default 120)
+- MOCK_ERROR_RATE (default 0.01)
+- MOCK_COST_PER_1K_TOKENS_USD (default 0.002)
+
+Load generator:
+- Build and run:
+	- make loadgen
+- Custom run example:
+	- go run ./cmd/loadgen --qps 500 --concurrency 128 --duration 60s --policy cheapest --prompt "ping"
+- Output: live QPS and final JSON summary; optional CSV via --csv-out.
+
+Expected local mock benchmark (localhost):
+- mean=40ms, p95=120ms, error=0.5% -> expect ~500 QPS with p95 < 150ms on a typical laptop.
+
 - PORT (default 8080)
 - ROUTER_POLICY (default cheapest)
 - OPENAI_API_KEY, OPENAI_MODEL (default gpt-4o)

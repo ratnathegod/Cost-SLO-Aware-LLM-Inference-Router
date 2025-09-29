@@ -15,6 +15,7 @@ import (
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/api"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/config"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/telemetry"
+	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/router"
 )
 
 func main() {
@@ -40,6 +41,22 @@ func main() {
 	r.Get("/v1/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+	r.Get("/v1/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		ps := router.GetProviders()
+		if len(ps) == 0 {
+			http.Error(w, "no providers", http.StatusServiceUnavailable)
+			return
+		}
+		// consider ready if any provider CB is not open
+		for _, p := range ps {
+			if p.CBStateValue() > 0 { // half-open or closed
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("ready"))
+				return
+			}
+		}
+		http.Error(w, "all providers tripped", http.StatusServiceUnavailable)
 	})
 	r.Handle("/metrics", telemetry.MetricsHandler())
 	r.Post("/v1/infer", api.HandleInfer(cfg))

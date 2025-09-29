@@ -103,23 +103,31 @@ func (s *Stats) P95LatencyMs() int64 {
 
 // ErrorRateSince computes error rate over outcomes within the last d duration
 func (s *Stats) ErrorRateSince(d time.Duration) float64 {
-	s.mu.RLock(); defer s.mu.RUnlock()
-	if len(s.outcomes) == 0 { return 0 }
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.outcomes) == 0 {
+		return 0
+	}
 	cutoff := time.Now().Add(-d)
 	var total, errs int
 	for _, o := range s.outcomes {
 		if o.At.After(cutoff) {
 			total++
-			if o.Err { errs++ }
+			if o.Err {
+				errs++
+			}
 		}
 	}
-	if total == 0 { return 0 }
+	if total == 0 {
+		return 0
+	}
 	return float64(errs) / float64(total)
 }
 
 // CBStateValue exposes 0=open,1=half,2=closed
 func (cb *CircuitBreaker) StateValue() float64 {
-	cb.mu.Lock(); defer cb.mu.Unlock()
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	if cb.open {
 		if cb.halfOpenProbe {
 			return 1
