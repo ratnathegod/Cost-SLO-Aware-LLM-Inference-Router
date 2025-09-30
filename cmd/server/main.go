@@ -13,9 +13,14 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/api"
+	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/auth"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/config"
+
+	// "github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/idempotency"
+	// "github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/rate"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/router"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/telemetry"
+	// "github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/usage"
 )
 
 func main() {
@@ -25,6 +30,39 @@ func main() {
 
 	// config
 	cfg := config.Load()
+
+	// validate configuration and log warnings
+	warnings := config.ValidateConfig(cfg)
+	for _, warning := range warnings {
+		log.Warn().Msg(warning)
+		if warning == "canary policy requires at least 2 providers, falling back to cheapest" {
+			cfg.DefaultPolicy = "cheapest"
+		}
+	}
+
+	// log effective configuration with secrets masked
+	log.Info().Interface("config", cfg.MaskSecrets()).Msg("loaded configuration")
+
+	// Initialize auth component first
+	keyManager, err := auth.NewAPIKeyManager(cfg.DDBTenantsTable, cfg.TenantsJSONPath)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to initialize API key manager")
+	}
+
+	// Temporarily disabled for debugging
+	// usageStore, err := usage.NewStore(cfg.DDBUsageTable)
+	// if err != nil {
+	// 	log.Fatal().Err(err).Msg("failed to initialize usage store")
+	// }
+
+	// idempotencyStore, err := idempotency.NewStore(cfg.DDBUsageTable)
+	// if err != nil {
+	// 	log.Fatal().Err(err).Msg("failed to initialize idempotency store")
+	// }
+
+	// rateLimiter := rate.NewLimiter()
+	// usageHandlers := api.NewUsageHandlers(usageStore)
+	// tenantHandlers := api.NewTenantHandlers(keyManager, usageStore)
 
 	r := chi.NewRouter()
 	// Observability init
@@ -59,7 +97,50 @@ func main() {
 		http.Error(w, "all providers tripped", http.StatusServiceUnavailable)
 	})
 	r.Handle("/metrics", telemetry.MetricsHandler())
-	r.Post("/v1/infer", api.HandleInfer(cfg))
+
+	// Test multi-tenant with just auth middleware
+	if cfg.EnableUsageTracking || cfg.TenantsJSONPath != "" {
+		r.Route("/v1", func(r chi.Router) {
+			r.Use(keyManager.APIKeyMiddleware)
+			r.Post("/infer", api.HandleInfer(cfg)) // Use basic handler for now
+		})
+	} else {
+		r.Post("/v1/infer", api.HandleInfer(cfg))
+	}
+
+	// Admin API
+	if cfg.AdminToken != "" {
+		admin := chi.NewRouter()
+		admin.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				auth := r.Header.Get("Authorization")
+				const prefix = "Bearer "
+				if len(auth) <= len(prefix) || auth[:len(prefix)] != prefix || auth[len(prefix):] != cfg.AdminToken {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				next.ServeHTTP(w, r)
+			})
+		})
+
+		admin.Get("/status", api.HandleAdminStatus())
+
+		admin.Get("/canary/status", api.HandleCanaryStatus())
+
+		admin.Post("/canary/advance", api.HandleCanaryAdvance())
+
+		admin.Post("/canary/rollback", api.HandleCanaryRollback())
+
+		admin.Post("/policy", api.HandlePolicyUpdate())
+
+		admin.Post("/providers/reload", api.HandleProvidersReload())
+
+		// Tenant management endpoints disabled for debugging
+		// admin.Post("/tenants", tenantHandlers.HandleCreateTenant())
+		// admin.Get("/tenants/{tenant_id}/usage", tenantHandlers.HandleGetTenantUsage())
+
+		r.Mount("/v1/admin", admin)
+	}
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

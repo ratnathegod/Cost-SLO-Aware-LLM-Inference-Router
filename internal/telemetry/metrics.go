@@ -56,10 +56,25 @@ var (
 		},
 		[]string{"window"},
 	)
+
+	AdminActionsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "router_admin_actions_total",
+			Help: "Admin actions performed",
+		},
+		[]string{"action"},
+	)
+
+	CanaryStage = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "router_canary_stage",
+			Help: "Current canary traffic percentage",
+		},
+	)
 )
 
 func MustRegisterMetrics() {
-	prometheus.MustRegister(RequestsTotal, LatencyMs, CostUSDTotal, ErrorsTotal, CBState, BurnRate)
+	prometheus.MustRegister(RequestsTotal, LatencyMs, CostUSDTotal, ErrorsTotal, CBState, BurnRate, AdminActionsTotal, CanaryStage)
 }
 
 func MetricsHandler() http.Handler { return promhttp.Handler() }

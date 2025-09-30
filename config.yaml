@@ -1,0 +1,35 @@
+# Multi-tenant LLM Router Configuration
+port: "8080"
+admin_token: "admin123"
+default_policy: "cheapest"
+
+# Enable multi-tenant features
+enable_usage_tracking: true
+
+# DynamoDB configuration (if available)
+ddb_tenants_table: "llm-router-tenants"
+ddb_usage_table: "llm-router-usage"
+
+# Fallback JSON file for local testing
+tenants_json_path: "tenants.json"
+
+# Provider configurations
+openai_key: ""
+openai_model: "gpt-4o"
+bedrock_model_id: "anthropic.claude-3-haiku"
+bedrock_region: "us-east-1"
+
+# Mock provider for testing
+enable_mock_provider: true
+mock_mean_latency_ms: 40
+mock_p95_latency_ms: 120
+mock_error_rate: 0.01
+mock_cost_per_1k_usd: 0.002
+
+# Canary configuration
+canary_stages: [1, 5, 25]
+canary_window: 200
+canary_burn_multiplier: 2
+
+# OpenTelemetry endpoint
+otel_endpoint: ""

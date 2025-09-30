@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/providers"
 )
@@ -24,10 +25,14 @@ type Engine struct {
 	rng       *rand.Rand
 
 	canary struct {
-		candidate string
-		stages    []float64
-		stageIdx  int
-		calls     int
+		candidate      string
+		stages         []float64
+		stageIdx       int
+		calls          int
+		window         int
+		burnMult       float64
+		lastTransition time.Time
+		lastReason     string
 	}
 }
 
@@ -38,6 +43,8 @@ func NewEngine(providersList []*providers.ResilientProvider) *Engine {
 		rng:       rand.New(rand.NewSource(42)),
 	}
 	e.canary.stages = []float64{0.01, 0.05, 0.25}
+	e.canary.window = 200
+	e.canary.burnMult = 2.0
 	if len(providersList) > 1 {
 		// default candidate = second cheapest
 		primary, candidate := e.cheapestPair("")
@@ -45,6 +52,97 @@ func NewEngine(providersList []*providers.ResilientProvider) *Engine {
 		e.canary.candidate = candidate.Name()
 	}
 	return e
+}
+
+// ConfigureCanary allows runtime tuning of canary stages (as percentages 0..100),
+// evaluation window (#calls), and burn rate multiplier threshold for rollback.
+func (e *Engine) ConfigureCanary(stagesPercent []float64, window int, burnMultiplier float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var st []float64
+	for _, p := range stagesPercent {
+		if p < 0 {
+			continue
+		}
+		// convert percent to fraction
+		st = append(st, p/100.0)
+	}
+	if len(st) > 0 {
+		e.canary.stages = st
+		if e.canary.stageIdx >= len(st) {
+			e.canary.stageIdx = len(st) - 1
+		}
+	}
+	if window > 0 {
+		e.canary.window = window
+	}
+	if burnMultiplier > 0 {
+		e.canary.burnMult = burnMultiplier
+	}
+}
+
+// CanaryPercent returns current canary stage percentage (0..100).
+func (e *Engine) CanaryPercent() float64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.canary.stages) == 0 {
+		return 0
+	}
+	return e.canary.stages[e.canary.stageIdx] * 100.0
+}
+
+func (e *Engine) CanaryStageIndex() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.canary.stageIdx
+}
+
+func (e *Engine) CanaryAdvance() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.canary.stageIdx+1 < len(e.canary.stages) {
+		e.canary.stageIdx++
+		e.canary.calls = 0
+		e.canary.lastTransition = time.Now()
+		e.canary.lastReason = "manual_advance"
+	}
+}
+
+func (e *Engine) CanaryRollback() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.canary.stageIdx = 0
+	e.canary.calls = 0
+	e.canary.lastTransition = time.Now()
+	e.canary.lastReason = "manual_rollback"
+}
+
+// CanaryCandidateProvider returns the name of the canary candidate provider
+func (e *Engine) CanaryCandidateProvider() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.canary.candidate
+}
+
+// CanaryWindowSize returns the current canary evaluation window
+func (e *Engine) CanaryWindowSize() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.canary.window
+}
+
+// CanaryLastTransition returns when the canary last changed stage
+func (e *Engine) CanaryLastTransition() time.Time {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.canary.lastTransition
+}
+
+// CanaryLastReason returns the reason for the last canary transition
+func (e *Engine) CanaryLastReason() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.canary.lastReason
 }
 
 func (e *Engine) providers() []*providers.ResilientProvider {
@@ -159,9 +257,9 @@ func (e *Engine) RecordResult(providerName string, failed bool) {
 		if providerName == e.canary.candidate {
 			e.canary.calls++
 			// simple stage progression: every 200 calls without excessive failures, advance
-			// rollback on failure rate > 2x SLO
+			// rollback on failure rate > burnMult x SLO
 			calls := e.canary.calls
-			if calls%200 == 0 {
+			if calls%e.canary.window == 0 {
 				// check failure rate of candidate
 				var cand *providers.ResilientProvider
 				for _, p := range e.provs {
@@ -172,14 +270,18 @@ func (e *Engine) RecordResult(providerName string, failed bool) {
 				}
 				if cand != nil {
 					burn := cand.Stats().ErrorRate() / e.sloTarget
-					if burn > 2.0 {
+					if burn > e.canary.burnMult {
 						// rollback to first stage
 						e.canary.stageIdx = 0
+						e.canary.lastTransition = time.Now()
+						e.canary.lastReason = "auto_rollback_burn_rate"
 						return
 					}
 				}
 				if e.canary.stageIdx+1 < len(e.canary.stages) {
 					e.canary.stageIdx++
+					e.canary.lastTransition = time.Now()
+					e.canary.lastReason = "auto_advance"
 				}
 			}
 		}
