@@ -1,0 +1,55 @@
+{
+  "name": "@llm-router/client",
+  "version": "1.0.0",
+  "description": "TypeScript client for LLM Router API",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx",
+    "test": "vitest"
+  },
+  "keywords": [
+    "llm",
+    "router",
+    "api",
+    "client",
+    "typescript",
+    "openai",
+    "anthropic"
+  ],
+  "author": "LLM Router Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router.git",
+    "directory": "clients/typescript"
+  },
+  "homepage": "https://github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router#readme",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "eslint": "^8.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "tsup": "^7.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

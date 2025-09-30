@@ -1,0 +1,3 @@
+[90m2025-09-30T13:03:33-06:00[0m [32mINF[0m [1mloaded configuration[0m [36mconfig=[0m{"AdminToken":"***masked***","BedrockModelID":"anthropic.claude-3-haiku","BedrockRegion":"us-east-1","CanaryBurnMultiplier":2,"CanaryStages":[1,5,25],"CanaryWindow":200,"DDBTenantsTable":"","DDBUsageTable":"","DefaultPolicy":"cheapest","EnableMockProvider":true,"EnableUsageTracking":true,"MockCostPer1kUSD":0.002,"MockErrorRate":0.01,"MockMeanLatencyMs":40,"MockP95LatencyMs":120,"OpenAIKey":"","OpenAIModel":"gpt-4o","OtelEndpoint":"","Port":"8080","TenantsJSONPath":"tenants.json"}
+[90m2025-09-30T13:03:33-06:00[0m [32mINF[0m [1mloaded tenants from JSON[0m [36mcount=[0m2
+[90m2025-09-30T13:03:33-06:00[0m [32mINF[0m [1mserver starting[0m [36maddr=[0m:8080

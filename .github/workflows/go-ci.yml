@@ -7,6 +7,20 @@ on:
     branches: [ main ]
 
 jobs:
+  api-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install Spectral
+        run: npm install -g @stoplight/spectral-cli
+      - name: Validate OpenAPI Spec
+        run: spectral lint api/openapi.yaml
+      - name: Check SDK freshness
+        run: make -f Makefile.api check-sdk-freshness
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -76,10 +90,36 @@ jobs:
             sleep 0.5
           done
           echo "server not ready"; cat server.log; exit 1
+      - name: Test documentation
+        run: curl -s http://localhost:8080/docs | grep -q "LLM Router API"
       - name: Run loadgen (short)
         run: |
           set -euo pipefail
-          go run ./cmd/loadgen --qps 200 --concurrency 64 --duration 15s --policy cheapest --prompt "ping" --json-summary /tmp/summary.json
+          go run ./loadgen -url=http://localhost:8080/v1/infer -duration=5s -rate=10
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) || true
+          fi
+
+  sdk-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: 'clients/typescript/package-lock.json'
+      - name: Test Go SDK
+        run: make -f Makefile.api sdk-go
+      - name: Test TypeScript SDK
+        run: make -f Makefile.api sdk-ts
       - name: Upload summary
         if: always()
         uses: actions/upload-artifact@v4

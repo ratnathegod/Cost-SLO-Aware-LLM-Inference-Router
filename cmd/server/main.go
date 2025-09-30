@@ -15,6 +15,7 @@ import (
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/api"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/auth"
 	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/config"
+	"github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/docs"
 
 	// "github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/idempotency"
 	// "github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/internal/rate"
@@ -107,6 +108,9 @@ func main() {
 	} else {
 		r.Post("/v1/infer", api.HandleInfer(cfg))
 	}
+
+	// Documentation routes (public)
+	r.Mount("/docs", docs.SwaggerUIHandler())
 
 	// Admin API
 	if cfg.AdminToken != "" {

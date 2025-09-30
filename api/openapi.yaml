@@ -1,0 +1,981 @@
+openapi: 3.1.0
+info:
+  title: LLM Router API
+  description: |
+    Cost and SLO-aware LLM inference router with multi-tenant support.
+    
+    ## Authentication
+    
+    - **Public Endpoints**: Use `X-API-Key` header with your tenant API key
+    - **Admin Endpoints**: Use `Authorization: Bearer <admin_token>` header
+    
+    ## Rate Limiting
+    
+    All tenant endpoints are subject to per-tenant rate limiting based on:
+    - Requests per second (RPS) 
+    - Daily token quotas
+    
+    Rate limit headers are returned with each response.
+    
+    ## Idempotency
+    
+    POST requests support idempotency via the optional `Idempotency-Key` header.
+    Duplicate requests with the same key within 24h return the cached response.
+  version: 1.0.0
+  contact:
+    name: LLM Router API Support
+    url: https://github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router
+  license:
+    name: MIT
+    url: https://github.com/ratnathegod/Cost-SLO-Aware-LLM-Inference-Router/blob/main/LICENSE
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+  - url: https://api.llm-router.example.com
+    description: Production server
+
+security:
+  - apiKeyAuth: []
+
+components:
+  securitySchemes:
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Tenant API key for accessing inference and usage endpoints
+    adminBearer:
+      type: http
+      scheme: bearer
+      description: Admin bearer token for administrative operations
+
+  schemas:
+    InferRequest:
+      type: object
+      required:
+        - prompt
+      properties:
+        model:
+          type: string
+          description: LLM model to use for inference
+          default: gpt-4o
+          example: gpt-4o
+        prompt:
+          type: string
+          description: Input text prompt for the model
+          example: "What is the capital of France?"
+        max_tokens:
+          type: integer
+          description: Maximum number of tokens to generate
+          minimum: 1
+          maximum: 4096
+          example: 100
+        stream:
+          type: boolean
+          description: Enable streaming response (not yet implemented)
+          default: false
+        policy:
+          type: string
+          description: Routing policy to use
+          enum: [cheapest, fastest_p95, slo_burn_aware, canary]
+          default: cheapest
+          example: cheapest
+        idempotency_key:
+          type: string
+          description: Optional idempotency key for duplicate request prevention
+          maxLength: 255
+          example: "user-request-12345"
+
+    InferResponse:
+      type: object
+      required:
+        - provider
+        - text
+        - cost_usd
+        - latency_ms
+        - request_id
+      properties:
+        provider:
+          type: string
+          description: LLM provider that served the request
+          example: openai
+        text:
+          type: string
+          description: Generated response text
+          example: "The capital of France is Paris."
+        cost_usd:
+          type: number
+          format: double
+          description: Cost of the request in USD
+          minimum: 0
+          example: 0.0025
+        latency_ms:
+          type: integer
+          description: Request latency in milliseconds
+          minimum: 0
+          example: 1250
+        request_id:
+          type: string
+          description: Unique identifier for this request
+          example: "req_abc123xyz789"
+
+    UsageDaily:
+      type: object
+      required:
+        - date
+        - requests
+        - successes
+        - failures
+        - tokens_in
+        - tokens_out
+        - cost_usd
+      properties:
+        date:
+          type: string
+          format: date
+          description: Date in YYYY-MM-DD format
+          example: "2025-09-30"
+        requests:
+          type: integer
+          description: Total number of requests
+          minimum: 0
+          example: 145
+        successes:
+          type: integer
+          description: Number of successful requests
+          minimum: 0
+          example: 142
+        failures:
+          type: integer
+          description: Number of failed requests
+          minimum: 0
+          example: 3
+        tokens_in:
+          type: integer
+          description: Total input tokens consumed
+          minimum: 0
+          example: 15420
+        tokens_out:
+          type: integer
+          description: Total output tokens generated
+          minimum: 0
+          example: 8936
+        cost_usd:
+          type: number
+          format: double
+          description: Total cost in USD
+          minimum: 0
+          example: 12.45
+
+    UsageRecentItem:
+      type: object
+      required:
+        - ts
+        - provider
+        - model
+        - status
+        - cost_usd
+        - latency_ms
+      properties:
+        ts:
+          type: string
+          format: date-time
+          description: Timestamp of the request
+          example: "2025-09-30T14:30:00Z"
+        provider:
+          type: string
+          description: LLM provider used
+          example: openai
+        model:
+          type: string
+          description: Model used
+          example: gpt-4o
+        status:
+          type: string
+          description: Request status
+          enum: [ok, error]
+          example: ok
+        cost_usd:
+          type: number
+          format: double
+          description: Cost of this request
+          minimum: 0
+          example: 0.0025
+        latency_ms:
+          type: integer
+          description: Request latency in milliseconds
+          minimum: 0
+          example: 1250
+        idempotency_key:
+          type: string
+          description: Idempotency key if provided
+          example: "user-request-12345"
+
+    Problem:
+      type: object
+      required:
+        - type
+        - title
+        - status
+        - detail
+        - request_id
+      properties:
+        type:
+          type: string
+          format: uri
+          description: URI identifying the problem type
+          example: "https://example.com/errors/invalid_api_key"
+        title:
+          type: string
+          description: Short, human-readable summary
+          example: "Invalid API key"
+        status:
+          type: integer
+          description: HTTP status code
+          minimum: 400
+          maximum: 599
+          example: 401
+        detail:
+          type: string
+          description: Human-readable explanation
+          example: "The provided API key is not valid"
+        request_id:
+          type: string
+          description: Unique request identifier for debugging
+          example: "req_abc123xyz789"
+        trace_id:
+          type: string
+          description: Distributed tracing ID if available
+          example: "trace_def456ghi012"
+
+    AdminStatus:
+      type: object
+      required:
+        - build
+        - uptime
+        - default_policy
+        - providers
+        - burn_rates
+        - total_requests
+      properties:
+        build:
+          type: object
+          required:
+            - version
+            - commit
+            - build_date
+          properties:
+            version:
+              type: string
+              example: "1.0.0"
+            commit:
+              type: string
+              example: "abc123def456"
+            build_date:
+              type: string
+              format: date-time
+              example: "2025-09-30T14:30:00Z"
+        uptime:
+          type: string
+          description: Server uptime duration
+          example: "2h30m15s"
+        default_policy:
+          type: string
+          description: Current default routing policy
+          example: "cheapest"
+        providers:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - cb_state
+              - error_rate_1m
+              - error_rate_5m
+              - error_rate_1h
+              - p95_latency_ms
+              - cost_per_1k_tokens_usd
+            properties:
+              name:
+                type: string
+                example: "openai"
+              cb_state:
+                type: number
+                description: Circuit breaker state (0=closed, 1=half-open, 2=open)
+                example: 0
+              error_rate_1m:
+                type: number
+                description: Error rate over last 1 minute
+                example: 0.02
+              error_rate_5m:
+                type: number
+                description: Error rate over last 5 minutes
+                example: 0.01
+              error_rate_1h:
+                type: number
+                description: Error rate over last 1 hour
+                example: 0.005
+              p95_latency_ms:
+                type: number
+                description: 95th percentile latency in milliseconds
+                example: 1500.0
+              cost_per_1k_tokens_usd:
+                type: number
+                description: Cost per 1000 tokens in USD
+                example: 0.002
+        burn_rates:
+          type: object
+          required:
+            - burn_rate_1m
+            - burn_rate_5m
+            - burn_rate_1h
+          properties:
+            burn_rate_1m:
+              type: number
+              description: Error budget burn rate over 1 minute
+              example: 0.5
+            burn_rate_5m:
+              type: number
+              description: Error budget burn rate over 5 minutes
+              example: 0.3
+            burn_rate_1h:
+              type: number
+              description: Error budget burn rate over 1 hour
+              example: 0.1
+        total_requests:
+          type: integer
+          description: Total requests processed since startup
+          minimum: 0
+          example: 15420
+        canary_stage_percent:
+          type: number
+          description: Current canary rollout percentage
+          minimum: 0
+          maximum: 100
+          example: 5
+
+    CanaryStatus:
+      type: object
+      required:
+        - stage
+        - percent
+        - window
+      properties:
+        stage:
+          type: integer
+          description: Current canary stage index
+          minimum: 0
+          example: 1
+        percent:
+          type: number
+          description: Current percentage of traffic on canary
+          minimum: 0
+          maximum: 100
+          example: 5
+        candidate:
+          type: string
+          description: Candidate provider being tested
+          example: "anthropic"
+        window:
+          type: integer
+          description: Evaluation window in requests
+          minimum: 1
+          example: 200
+        last_transition:
+          type: object
+          properties:
+            ts:
+              type: string
+              format: date-time
+              description: Timestamp of last stage transition
+              example: "2025-09-30T14:30:00Z"
+            reason:
+              type: string
+              description: Reason for last transition
+              example: "error_rate_acceptable"
+
+    CreateTenantRequest:
+      type: object
+      required:
+        - name
+        - plan
+        - rps_limit
+        - daily_token_limit
+      properties:
+        name:
+          type: string
+          description: Human-readable tenant name
+          example: "Acme Corp"
+        plan:
+          type: string
+          description: Tenant plan/tier
+          example: "enterprise"
+        rps_limit:
+          type: integer
+          description: Requests per second limit
+          minimum: 1
+          example: 100
+        daily_token_limit:
+          type: integer
+          format: int64
+          description: Daily token quota limit
+          minimum: 1
+          example: 1000000
+        enabled:
+          type: boolean
+          description: Whether tenant is enabled
+          default: true
+
+    CreateTenantResponse:
+      type: object
+      required:
+        - tenant_id
+        - api_key
+        - name
+        - plan
+        - rps_limit
+        - daily_token_limit
+        - enabled
+        - created_at
+        - updated_at
+      properties:
+        tenant_id:
+          type: string
+          description: Generated tenant identifier
+          example: "tenant_abc123"
+        api_key:
+          type: string
+          description: Generated API key for tenant
+          example: "llm_sk_abc123def456ghi789"
+        name:
+          type: string
+          example: "Acme Corp"
+        plan:
+          type: string
+          example: "enterprise"
+        rps_limit:
+          type: integer
+          example: 100
+        daily_token_limit:
+          type: integer
+          format: int64
+          example: 1000000
+        enabled:
+          type: boolean
+          example: true
+        created_at:
+          type: string
+          format: date-time
+          example: "2025-09-30T14:30:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2025-09-30T14:30:00Z"
+
+paths:
+  /v1/healthz:
+    get:
+      summary: Health check
+      description: Returns server health status
+      operationId: healthCheck
+      security: []
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "ok"
+
+  /v1/readyz:
+    get:
+      summary: Readiness check
+      description: Returns server readiness status
+      operationId: readinessCheck
+      security: []
+      responses:
+        '200':
+          description: Server is ready
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "ready"
+        '503':
+          description: Server is not ready
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/infer:
+    post:
+      summary: Generate LLM inference
+      description: |
+        Submit a prompt for LLM inference using the configured routing policy.
+        
+        Supports idempotency via the `Idempotency-Key` header. Requests with 
+        the same key within 24 hours will return the cached response.
+      operationId: infer
+      security:
+        - apiKeyAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: Optional idempotency key for duplicate prevention
+          required: false
+          schema:
+            type: string
+            maxLength: 255
+            example: "user-request-12345"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InferRequest'
+            examples:
+              basic:
+                summary: Basic inference request
+                value:
+                  prompt: "What is the capital of France?"
+                  model: "gpt-4o"
+              with_policy:
+                summary: Request with specific policy
+                value:
+                  prompt: "Explain quantum computing in simple terms"
+                  model: "gpt-4o"
+                  policy: "fastest_p95"
+                  max_tokens: 200
+      responses:
+        '200':
+          description: Inference completed successfully
+          headers:
+            X-Request-ID:
+              description: Unique request identifier
+              schema:
+                type: string
+            X-RateLimit-Remaining:
+              description: Remaining requests in current window
+              schema:
+                type: integer
+            X-RateLimit-Reset:
+              description: Unix timestamp when rate limit resets
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InferResponse'
+              examples:
+                success:
+                  summary: Successful inference
+                  value:
+                    provider: "openai"
+                    text: "The capital of France is Paris."
+                    cost_usd: 0.0025
+                    latency_ms: 1250
+                    request_id: "req_abc123xyz789"
+        '400':
+          description: Invalid request
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: "https://example.com/errors/invalid_request"
+                title: "Invalid request"
+                status: 400
+                detail: "Prompt is required"
+                request_id: "req_abc123xyz789"
+        '401':
+          description: Authentication required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: "https://example.com/errors/invalid_api_key"
+                title: "Invalid API key"
+                status: 401
+                detail: "The provided API key is not valid"
+                request_id: "req_abc123xyz789"
+        '429':
+          description: Rate limit exceeded
+          headers:
+            X-RateLimit-Remaining:
+              description: Remaining requests (0)
+              schema:
+                type: integer
+                example: 0
+            X-RateLimit-Reset:
+              description: Unix timestamp when limit resets
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: "https://example.com/errors/rate_limit_exceeded"
+                title: "Rate limit exceeded"
+                status: 429
+                detail: "Request rate limit exceeded. Try again later."
+                request_id: "req_abc123xyz789"
+        '503':
+          description: Service unavailable
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: "https://example.com/errors/service_unavailable"
+                title: "Service unavailable"
+                status: 503
+                detail: "No providers are currently available"
+                request_id: "req_abc123xyz789"
+
+  /v1/usage/daily:
+    get:
+      summary: Get daily usage summary
+      description: |
+        Returns daily usage statistics for the authenticated tenant.
+        Results are ordered by date descending (most recent first).
+      operationId: getDailyUsage
+      security:
+        - apiKeyAuth: []
+      parameters:
+        - name: days
+          in: query
+          description: Number of days to retrieve (max 30)
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 30
+            default: 7
+            example: 7
+      responses:
+        '200':
+          description: Daily usage data
+          headers:
+            X-Request-ID:
+              description: Unique request identifier
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UsageDaily'
+              example:
+                - date: "2025-09-30"
+                  requests: 145
+                  successes: 142
+                  failures: 3
+                  tokens_in: 15420
+                  tokens_out: 8936
+                  cost_usd: 12.45
+                - date: "2025-09-29"
+                  requests: 98
+                  successes: 95
+                  failures: 3
+                  tokens_in: 10200
+                  tokens_out: 6100
+                  cost_usd: 8.32
+        '401':
+          description: Authentication required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/usage/recent:
+    get:
+      summary: Get recent usage records
+      description: |
+        Returns the most recent individual usage records for the authenticated tenant.
+        Limited to the last 100 requests.
+      operationId: getRecentUsage
+      security:
+        - apiKeyAuth: []
+      responses:
+        '200':
+          description: Recent usage records
+          headers:
+            X-Request-ID:
+              description: Unique request identifier
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UsageRecentItem'
+              example:
+                - ts: "2025-09-30T14:30:00Z"
+                  provider: "openai"
+                  model: "gpt-4o"
+                  status: "ok"
+                  cost_usd: 0.0025
+                  latency_ms: 1250
+                  idempotency_key: "user-request-12345"
+                - ts: "2025-09-30T14:28:15Z"
+                  provider: "anthropic"
+                  model: "claude-3-haiku"
+                  status: "ok"
+                  cost_usd: 0.0018
+                  latency_ms: 890
+        '401':
+          description: Authentication required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/admin/status:
+    get:
+      summary: Get admin status
+      description: Returns comprehensive system status and metrics
+      operationId: getAdminStatus
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: System status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStatus'
+        '401':
+          description: Authentication required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/admin/canary/status:
+    get:
+      summary: Get canary rollout status
+      description: Returns current canary deployment status
+      operationId: getCanaryStatus
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Canary status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CanaryStatus'
+        '401':
+          description: Authentication required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/admin/canary/advance:
+    post:
+      summary: Advance canary rollout
+      description: Move canary rollout to the next stage
+      operationId: advanceCanary
+      security:
+        - adminBearer: []
+      responses:
+        '204':
+          description: Canary advanced successfully
+        '401':
+          description: Authentication required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: Cannot advance canary
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/admin/canary/rollback:
+    post:
+      summary: Rollback canary deployment  
+      description: Rollback canary to previous stage or disable
+      operationId: rollbackCanary
+      security:
+        - adminBearer: []
+      responses:
+        '204':
+          description: Canary rolled back successfully
+        '401':
+          description: Authentication required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/admin/policy:
+    post:
+      summary: Update default routing policy
+      description: Change the default routing policy for the system
+      operationId: updatePolicy
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - default_policy
+              properties:
+                default_policy:
+                  type: string
+                  enum: [cheapest, fastest_p95, slo_burn_aware, canary]
+                  example: "fastest_p95"
+      responses:
+        '204':
+          description: Policy updated successfully
+        '400':
+          description: Invalid policy
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Authentication required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/admin/providers/reload:
+    post:
+      summary: Reload provider configuration
+      description: Reload provider configuration (not yet implemented)
+      operationId: reloadProviders
+      security:
+        - adminBearer: []
+      responses:
+        '501':
+          description: Not implemented
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: "https://example.com/errors/not_implemented"
+                title: "Not implemented"
+                status: 501
+                detail: "Provider reload is not yet implemented"
+                request_id: "req_abc123xyz789"
+
+  /v1/admin/tenants:
+    post:
+      summary: Create a new tenant
+      description: Create a new tenant with generated API key
+      operationId: createTenant
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTenantRequest'
+            example:
+              name: "Acme Corp"
+              plan: "enterprise"
+              rps_limit: 100
+              daily_token_limit: 1000000
+              enabled: true
+      responses:
+        '201':
+          description: Tenant created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTenantResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Authentication required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/admin/tenants/{tenant_id}/usage:
+    get:
+      summary: Get tenant usage
+      description: Get usage statistics for a specific tenant
+      operationId: getTenantUsage
+      security:
+        - adminBearer: []
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          description: Tenant identifier
+          schema:
+            type: string
+            example: "tenant_abc123"
+        - name: since
+          in: query
+          description: Start date (YYYY-MM-DD)
+          required: false
+          schema:
+            type: string
+            format: date
+            example: "2025-09-23"
+        - name: until
+          in: query
+          description: End date (YYYY-MM-DD)
+          required: false
+          schema:
+            type: string
+            format: date
+            example: "2025-09-30"
+      responses:
+        '200':
+          description: Tenant usage data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UsageDaily'
+        '401':
+          description: Authentication required
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Tenant not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+tags:
+  - name: Health
+    description: Health and readiness endpoints
+  - name: Inference
+    description: LLM inference operations
+  - name: Usage
+    description: Usage tracking and analytics
+  - name: Admin
+    description: Administrative operations
+  - name: Canary
+    description: Canary deployment management

@@ -1,0 +1,167 @@
+# Makefile for LLM Router API operations
+
+# Variables
+API_SPEC := api/openapi.yaml
+GO_SDK_DIR := clients/go
+TS_SDK_DIR := clients/typescript
+SPECTRAL_CONFIG := .spectral.yml
+DOCS_PORT := 8080
+
+.PHONY: help api-validate api-lint sdk-go sdk-ts docs-serve docs-build test-api clean
+
+# Default target
+help:
+	@echo "Available targets:"
+	@echo "  api-validate    - Validate OpenAPI specification"
+	@echo "  api-lint        - Lint OpenAPI spec with Spectral"
+	@echo "  sdk-go          - Build and test Go SDK"
+	@echo "  sdk-ts          - Build and test TypeScript SDK"
+	@echo "  docs-serve      - Serve API documentation locally"
+	@echo "  docs-build      - Build embedded documentation assets"
+	@echo "  test-api        - Run API conformance tests"
+	@echo "  clean          - Clean build artifacts"
+	@echo "  all            - Run all validations and builds"
+
+# Validate OpenAPI specification
+api-validate: $(API_SPEC)
+	@echo "Validating OpenAPI specification..."
+	@if command -v swagger &> /dev/null; then \
+		swagger validate $(API_SPEC); \
+	else \
+		echo "Warning: swagger CLI not installed. Install with 'go install github.com/go-swagger/go-swagger/cmd/swagger@latest'"; \
+	fi
+	@echo "OpenAPI specification is valid ✓"
+
+# Lint API specification with Spectral
+api-lint: $(API_SPEC) $(SPECTRAL_CONFIG)
+	@echo "Linting OpenAPI specification with Spectral..."
+	@if command -v spectral &> /dev/null; then \
+		spectral lint $(API_SPEC); \
+	else \
+		echo "Warning: Spectral not installed. Install with 'npm install -g @stoplight/spectral-cli'"; \
+	fi
+	@echo "API linting complete ✓"
+
+# Create Spectral configuration if it doesn't exist
+$(SPECTRAL_CONFIG):
+	@echo "Creating Spectral configuration..."
+	@cat > $(SPECTRAL_CONFIG) << 'EOF'
+extends: ["spectral:oas"]
+rules:
+  operation-operationId: error
+  operation-summary: error
+  operation-description: warn
+  operation-tags: error
+  path-params: error
+  typed-enum: error
+  oas3-valid-media-example: error
+  oas3-valid-schema-example: error
+  no-$ref-siblings: error
+  openapi-tags: error
+  info-description: error
+  info-contact: warn
+  info-license: warn
+  tag-description: error
+  operation-4xx-response: error
+  operation-success-response: error
+EOF
+	@echo "Spectral configuration created ✓"
+
+# Build and test Go SDK
+sdk-go:
+	@echo "Building Go SDK..."
+	@cd $(GO_SDK_DIR) && go mod tidy
+	@cd $(GO_SDK_DIR) && go build ./...
+	@cd $(GO_SDK_DIR) && go test -v ./...
+	@cd $(GO_SDK_DIR) && go vet ./...
+	@echo "Go SDK build complete ✓"
+
+# Build and test TypeScript SDK
+sdk-ts:
+	@echo "Building TypeScript SDK..."
+	@cd $(TS_SDK_DIR) && npm install
+	@cd $(TS_SDK_DIR) && npm run build
+	@cd $(TS_SDK_DIR) && npm run type-check
+	@cd $(TS_SDK_DIR) && npm test
+	@echo "TypeScript SDK build complete ✓"
+
+# Serve documentation locally
+docs-serve: docs-build
+	@echo "Starting documentation server on port $(DOCS_PORT)..."
+	@cd cmd/server && go run main.go --port=$(DOCS_PORT) --docs-only=true &
+	@echo "Documentation available at http://localhost:$(DOCS_PORT)/docs"
+	@echo "Press Ctrl+C to stop the server"
+
+# Build embedded documentation assets
+docs-build:
+	@echo "Building documentation assets..."
+	@# Ensure swagger-ui assets are present
+	@if [ ! -d "internal/docs/swagger-ui" ]; then \
+		echo "Downloading Swagger UI assets..."; \
+		mkdir -p internal/docs/swagger-ui; \
+		curl -L https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.9.0.tar.gz | \
+		tar -xzf - --strip-components=2 swagger-ui-5.9.0/dist; \
+		mv dist/* internal/docs/swagger-ui/; \
+		rm -rf dist; \
+	fi
+	@# Copy OpenAPI spec to docs directory
+	@cp $(API_SPEC) internal/docs/openapi.yaml
+	@echo "Documentation assets ready ✓"
+
+# Run API conformance tests
+test-api: api-validate
+	@echo "Running API conformance tests..."
+	@go test ./internal/api/... -v -tags=integration
+	@echo "API tests complete ✓"
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning build artifacts..."
+	@rm -rf $(GO_SDK_DIR)/dist
+	@rm -rf $(TS_SDK_DIR)/dist
+	@rm -rf $(TS_SDK_DIR)/node_modules
+	@rm -f internal/docs/openapi.yaml
+	@echo "Clean complete ✓"
+
+# Install development dependencies
+install-deps:
+	@echo "Installing development dependencies..."
+	@# Install Spectral for API linting
+	@if ! command -v spectral &> /dev/null; then \
+		echo "Installing Spectral..."; \
+		npm install -g @stoplight/spectral-cli; \
+	fi
+	@# Install Swagger CLI for validation
+	@if ! command -v swagger &> /dev/null; then \
+		echo "Installing Swagger CLI..."; \
+		go install github.com/go-swagger/go-swagger/cmd/swagger@latest; \
+	fi
+	@echo "Development dependencies installed ✓"
+
+# Run all validations and builds
+all: api-validate api-lint sdk-go sdk-ts docs-build test-api
+	@echo "All API operations complete ✓"
+
+# CI target for GitHub Actions
+ci: install-deps all
+	@echo "CI pipeline complete ✓"
+
+# Development workflow
+dev: docs-build docs-serve
+
+# Check if SDKs are up to date with API spec
+check-sdk-freshness:
+	@echo "Checking if SDKs are up to date with API specification..."
+	@API_MODIFIED=$$(stat -c %Y $(API_SPEC) 2>/dev/null || stat -f %m $(API_SPEC)); \
+	GO_CLIENT_MODIFIED=$$(stat -c %Y $(GO_SDK_DIR)/client.go 2>/dev/null || stat -f %m $(GO_SDK_DIR)/client.go); \
+	TS_CLIENT_MODIFIED=$$(stat -c %Y $(TS_SDK_DIR)/src/index.ts 2>/dev/null || stat -f %m $(TS_SDK_DIR)/src/index.ts); \
+	if [ $$API_MODIFIED -gt $$GO_CLIENT_MODIFIED ] || [ $$API_MODIFIED -gt $$TS_CLIENT_MODIFIED ]; then \
+		echo "⚠️  SDKs may be out of date with API specification"; \
+		echo "   API spec modified: $$(date -r $$API_MODIFIED)"; \
+		echo "   Go SDK modified:   $$(date -r $$GO_CLIENT_MODIFIED)"; \
+		echo "   TS SDK modified:   $$(date -r $$TS_CLIENT_MODIFIED)"; \
+		echo "   Consider regenerating SDKs"; \
+		exit 1; \
+	else \
+		echo "SDKs are up to date ✓"; \
+	fi

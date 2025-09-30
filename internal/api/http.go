@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -30,6 +31,7 @@ type InferResponse struct {
 	Text      string  `json:"text"`
 	CostUSD   float64 `json:"cost_usd"`
 	LatencyMs int64   `json:"latency_ms"`
+	RequestID string  `json:"request_id"`
 }
 
 func HandleInfer(cfg config.Config) http.HandlerFunc {
@@ -86,11 +88,20 @@ func HandleInfer(cfg config.Config) http.HandlerFunc {
 	// export initial canary stage metric
 	telemetry.CanaryStage.Set(eng.CanaryPercent())
 	return func(w http.ResponseWriter, r *http.Request) {
+		rw := NewResponseWriter(w, r)
+		
 		var req InferRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			rw.WriteValidationError("body", "Invalid JSON format")
 			return
 		}
+
+		// Validate request
+		if err := ValidateInferRequest(&req); err != nil {
+			rw.WriteValidationError("request", err.Error())
+			return
+		}
+
 		if req.Policy == "" {
 			// use runtime default policy which admin can update
 			if p := router.GetDefaultPolicy(); p != "" {
@@ -106,7 +117,7 @@ func HandleInfer(cfg config.Config) http.HandlerFunc {
 		// Choose provider via policy engine
 		chosen := eng.Choose(req.Policy, req.Model)
 		if chosen == nil {
-			http.Error(w, "no providers available", http.StatusServiceUnavailable)
+			rw.WriteProviderError("router", fmt.Errorf("no providers available for model %s", req.Model))
 			return
 		}
 		// Start span
@@ -166,14 +177,20 @@ func HandleInfer(cfg config.Config) http.HandlerFunc {
 		}
 		if err != nil {
 			log.Error().Err(err).Str("provider", chosen.Name()).Msg("completion failed")
-			http.Error(w, "provider error", http.StatusBadGateway)
+			rw.WriteProviderError(chosen.Name(), err)
 			return
 		}
-		resp := InferResponse{Provider: chosen.Name(), Text: out.Text, CostUSD: cost, LatencyMs: latency}
+		
+		resp := InferResponse{
+			Provider:  chosen.Name(),
+			Text:      out.Text,
+			CostUSD:   cost,
+			LatencyMs: latency,
+			RequestID: rw.requestID,
+		}
 
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Error().Err(err).Msg("encode resp")
+		if err := rw.WriteJSON(http.StatusOK, resp); err != nil {
+			log.Error().Err(err).Msg("encode response")
 		}
 	}
 }
